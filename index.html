@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Optimal Route Calculator</title>
+    <style>
+      #container {
+        display: flex;
+        gap: 20px
+      }
+      #in-sidebar {
+        flex-grow: 1;
+      }
+      #map {
+        flex-grow: 5;
+        height: 500px;
+      }
+      #out-sidebar {
+        flex-grow: 1;
+      }
+      #set-start-button {
+        visibility: hidden;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="container">
+      <div id="in-sidebar">
+        <h3>Locations:</h3>
+        <ul id="location-list"></ul>
+        <input type="text" id="location-input" placeholder="Add a location">
+        <button id="calculate-route-button">Calculate Route</button>
+      </div>
+
+      <div id="map"></div>
+
+      <div id="out-sidebar">
+        <h3>Route Info</h3>
+        <div>Total Distance: <span id="total-dist"></span></div>
+        <div id="directions-panel"></div>
+      </div>
+    </div>
+
+    <script>
+      let map;
+      const markers = [];
+      let startingLocation = null;
+
+      function initMap() {
+        map = new google.maps.Map(document.getElementById("map"), {
+          center: { lat: 37.6, lng: -95.665 },
+          zoom: 4,
+        });
+
+        const directionsService = new google.maps.DirectionsService();
+        const directionsRenderer = new google.maps.DirectionsRenderer({
+          map: map,
+          panel: document.getElementById("directions-panel"),
+        });
+
+        function addMarker(location, title) {
+          const marker = new google.maps.Marker({
+            position: location,
+            map: map,
+            title: title,
+            visibility: false,
+          });
+          markers.push(marker);
+        }
+
+        function addLocationToList(locationName) {
+          const locationList = document.getElementById("location-list");
+          const li = document.createElement("li");
+          li.textContent = locationName;
+          li.addEventListener("click", function () {
+            removeLocation(locationName);
+            this.remove();
+            mapReset();
+          });
+
+          const setStartingButton = document.createElement("button");
+          setStartingButton.id = 'set-start-button';
+          setStartingButton.textContent = "Set as Start";
+          setStartingButton.addEventListener("click", function (event) {
+            setStartingLocation(locationName);
+            event.stopPropagation(); //So that pressing the btn doesnt propagate to items listener
+          });
+
+          li.appendChild(setStartingButton);
+
+          li.addEventListener("mouseenter", function () {
+            setStartingButton.style.visibility = "visible";
+          });
+
+          li.addEventListener("mouseleave", function () {
+            setStartingButton.style.visibility = "hidden";
+          });
+          
+          locationList.appendChild(li);
+        }
+
+        function setStartingLocation(locationName) {
+          const marker = markers.find(  (marker) => marker.getTitle() === locationName  );
+          if (marker) {
+            if (startingLocation) startingLocation.setAnimation(null);
+            
+            marker.setAnimation(google.maps.Animation.BOUNCE);
+            startingLocation = marker;
+          }
+        }
+
+        function removeLocation(locationName) {
+          const markerIndex = markers.findIndex(  (marker) => marker.getTitle() === locationName  );
+          if (markerIndex !== -1) {
+            const marker = markers[markerIndex];
+            marker.setMap(null);
+            markers.splice(markerIndex, 1);
+            if(marker === startingLocation) {
+              startingLocation = null;
+            }
+          }
+        }
+
+        const locationInput = document.getElementById("location-input");
+        const autocomplete = new google.maps.places.Autocomplete(locationInput);
+        autocomplete.addListener("place_changed", function () {
+          const place = autocomplete.getPlace();
+          if (!place.geometry) {
+            alert("No details available for input: '" + place.name + "'");
+            return;
+          }
+          const location = place.geometry.location;
+          const locationName = place.name;
+
+          if(markers.length > 63) {
+            alert("Limit of 64 locations");
+            return;
+          }
+
+          addMarker(location, locationName);
+          addLocationToList(locationName);
+          locationInput.value = "";
+          mapReset();
+        });
+
+        const calculateRouteButton = document.getElementById("calculate-route-button");
+        calculateRouteButton.addEventListener("click", function () {
+          if(startingLocation === null) {
+            alert("Must select starting location");
+            return;
+          }
+          //toggleMarkersFalse();
+          buildMatrix();
+        });
+
+        async function buildMatrix() {
+          let markerIndex = markers.findIndex(marker => marker.getTitle() === startingLocation.getTitle());
+          if(markerIndex !== -1) {
+            markers.splice(markerIndex, 1);
+            markers.unshift(startingLocation);
+          }
+          const matrix = [];
+
+          for (let i = 0; i < markers.length; i++) {
+            const row = [];
+            for (let j = 0; j < markers.length; j++) {
+              if (i == j) row.push(0);
+              else {
+                const distance = await new Promise(resolve => {
+                  getDistance(markers[i], markers[j], (distance) => {
+                    resolve(distance);
+                  });
+                });
+                row.push(distance);
+              }
+            }
+            matrix.push(row);
+          }
+          console.log("Generated distance matrix:");
+          console.log(matrix);
+          console.log("Running tsp");
+          const result = tsp(matrix);
+
+          showRouteCost(result.cost);
+
+          //---------- Setup waypoints
+          const n = markers.length-2;
+          const newArr = [];
+
+          for(let i=0; i <= n; i++) {
+            let markerIndex = markers.findIndex(  (marker) => 
+              marker.getTitle() === markers[result.path[i]].getTitle()
+            );
+            newArr.push(markers[markerIndex]);
+          }
+
+          const waypoints = newArr.map(marker => ({
+            location: marker.getPosition(),
+            stopover: true
+          }));
+
+          //---------- Display route
+          // toggleMarkersFalse();
+
+          const request = {
+            origin: startingLocation.getPosition(),
+            destination: startingLocation.getPosition(),
+            waypoints: waypoints,
+            travelMode: google.maps.TravelMode.DRIVING,
+          };
+
+          directionsService.route(request, function (response, status) {
+            if (status === google.maps.DirectionsStatus.OK) {
+              directionsRenderer.setDirections(response);
+            }
+            
+            const bounds = new google.maps.LatLngBounds();
+            response.routes[0].legs.forEach(leg => {
+              bounds.extend(leg.start_location);
+              bounds.extend(leg.end_location);
+            });
+            map.fitBounds(bounds);
+
+          }).then((result) => {
+            // Remove, and uncomment marker visibility toggles to use the generated route markers
+            directionsRenderer.setOptions({ suppressMarkers: true });
+
+            directionsRenderer.setDirections(result);
+          });
+        }
+
+        async function getDistance(origin, destination, callback) {
+          const service = new google.maps.DistanceMatrixService();
+          service.getDistanceMatrix(
+            {
+              origins: [origin.position],
+              destinations: [destination.position],
+              travelMode: google.maps.TravelMode.DRIVING,
+              unitSystem: google.maps.UnitSystem.IMPERIAL,
+            },
+            function (response, status) {
+              if (status === google.maps.DistanceMatrixStatus.OK) {
+                let distance = response.rows[0].elements[0].distance.value;
+                callback(distance);
+              }
+            }
+          );
+        }
+
+        function tsp(matrix) {
+          const n = matrix.length;
+          const allSets = (1 << n) - 1;
+          const memo = {};
+
+          function searchNode(node, visited) {
+            const key = `${node}-${visited}`;
+            if (memo[key] !== undefined) return memo[key];
+            if (visited === allSets) return { cost: matrix[node][0], path: [0] };
+
+            let minCost = Infinity;
+            let minPath = [];
+
+            for (let i = 0; i < n; i++) {
+              if ((visited & (1 << i)) === 0) {
+                const { cost, path } = searchNode(i, visited | (1 << i));
+                const newCost = matrix[node][i] + cost;
+
+                if (newCost < minCost) {
+                  minCost = newCost;
+                  minPath = [i, ...path];
+                }
+              }
+            }
+            
+            memo[key] = { cost: minCost, path: minPath };
+            return memo[key];
+          }
+          return searchNode(0, 1);
+        }
+
+        function toggleMarkersFalse() {
+          markers.forEach(marker => {
+            marker.setVisible(false);
+          })
+        }
+
+        function toggleMarkersTrue() {
+          markers.forEach(marker => {
+            marker.setVisible(true);
+          })
+        }
+
+        function resetRoute() {
+          directionsRenderer.setDirections({ routes: [] });
+        }
+
+        function showRouteCost(cost) {
+          const costText = document.getElementById("total-dist");
+          costText.textContent = (cost * .0006213712).toFixed(2) + " mi";
+        }
+
+        function resetRouteCost() {
+          const costText = document.getElementById("total-dist");
+          costText.textContent = null;
+        }
+
+        function mapReset() {
+          resetRouteCost();
+          resetRoute();
+          //toggleMarkersTrue();
+        }
+      }
+    </script>
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBZuo2ChGgQlLva6hUnP6SaKMXDEpgds3A&libraries=places&callback=initMap" async defer></script>
+  </body>
+</html>
