@@ -123,11 +123,11 @@
 
         const locationInput = document.getElementById("location-input");
         const autocomplete = new google.maps.places.Autocomplete(locationInput);
-        autocomplete.addListener("place_changed", function () {
-          const place = autocomplete.getPlace();
-          if (!place.geometry) {
-            alert("No details available for input: '" + place.name + "'");
-            return;
+
+        function addPlace(place) {
+          if (!place || !place.geometry.location) {
+              alert("No details available for input: '" + locationInput.value + "'");
+              return;
           }
           const location = place.geometry.location;
           const locationName = place.name;
@@ -141,6 +141,33 @@
           addLocationToList(locationName);
           locationInput.value = "";
           mapReset();
+        }
+
+
+        autocomplete.addListener("place_changed", function(event) {
+          if(locationInput.value) return; //Without this line there's a weird bug which occurs when an autocomplete
+                                          //  suggestion is selected via arrow key, and enter is pressed.
+                                          // Results in both the "place_changed" and "Enter" listeners activating, location added twice.
+          const place = autocomplete.getPlace();
+          addPlace(place);
+        });
+
+        locationInput.addEventListener("keydown", function (event) {
+          if(event.key === "Enter") {
+            event.preventDefault();
+
+            const geocoder = new google.maps.Geocoder();
+
+            geocoder.geocode({ address: locationInput.value }, function(results, status) {
+              if (status === 'OK' && results && results.length > 0) {
+                const place = results[0];
+                place.name = locationInput.value;
+                addPlace(place);
+              } else {
+                alert("Geocode unsuccessful for " + locationInput.value);
+              }
+            });
+          }
         });
 
         const calculateRouteButton = document.getElementById("calculate-route-button");
